@@ -32,10 +32,12 @@ class UploadActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val imageUris = intent.getStringArrayListExtra("IMAGE_URIS") ?: arrayListOf()
-        val groupId = intent.getStringExtra("GROUP_ID") ?: "0"
+        val objectId = intent.getStringExtra("OBJECT_ID") ?: "0"
+        val isVisibleToCustomer = intent.getBooleanExtra("IS_VISIBLE_TO_CUSTOMER", false)
 
         Log.d("UploadActivity", "Получены файлы: $imageUris")
-        Log.d("UploadActivity", "Группа ID: $groupId")
+        Log.d("UploadActivity", "Объект ID: $objectId")
+        Log.d("UploadActivity", "Видимо для заказчика: $isVisibleToCustomer")
 
         if (imageUris.isEmpty()) {
             Toast.makeText(this, "Ошибка: файлы не переданы!", Toast.LENGTH_SHORT).show()
@@ -45,18 +47,18 @@ class UploadActivity : ComponentActivity() {
         }
 
         setContent {
-            UploadScreen(imageUris, groupId) { finish() }
+            UploadScreen(imageUris, objectId, isVisibleToCustomer) { finish() }
         }
     }
 }
 
 @Composable
-fun UploadScreen(imageUris: List<String>, groupId: String, onUploadComplete: () -> Unit) {
+fun UploadScreen(imageUris: List<String>, objectId: String, isVisibleToCustomer: Boolean, onUploadComplete: () -> Unit) {
     val context = LocalContext.current
     var uploadStatus by remember { mutableStateOf("Подготовка к загрузке...") }
 
     LaunchedEffect(Unit) {
-        startUploadWork(context, imageUris, groupId)
+        startUploadWork(context, imageUris, objectId, isVisibleToCustomer)
         uploadStatus = "Файлы поставлены в очередь загрузки..."
         delay(2000)
         onUploadComplete()
@@ -75,13 +77,14 @@ fun UploadScreen(imageUris: List<String>, groupId: String, onUploadComplete: () 
     }
 }
 
-fun startUploadWork(context: Context, imageUris: List<String>, groupId: String) {
+fun startUploadWork(context: Context, imageUris: List<String>, objectId: String, isVisibleToCustomer: Boolean = false) {
     val workManager = WorkManager.getInstance(context)
 
     val uploadWork = OneTimeWorkRequestBuilder<UploadWorker>()
         .setInputData(workDataOf(
             "IMAGE_URIS" to imageUris.toTypedArray(),
-            "GROUP_ID" to groupId
+            "OBJECT_ID" to objectId,
+            "IS_VISIBLE_TO_CUSTOMER" to isVisibleToCustomer
         ))
         .setBackoffCriteria(
             BackoffPolicy.EXPONENTIAL,

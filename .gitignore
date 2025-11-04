@@ -13,3 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Keystore files - НИКОГДА не коммитьте эти файлы!
+*.jks
+*.keystore
+keystore.properties

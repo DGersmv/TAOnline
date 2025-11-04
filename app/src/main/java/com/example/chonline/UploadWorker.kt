@@ -2,81 +2,99 @@ package com.example.chonline
 
 import android.content.Context
 import android.net.Uri
-import android.util.Base64
 import android.util.Log
 import android.widget.Toast
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import com.example.chonline.network.AdminService
+import com.example.chonline.network.AuthService
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 class UploadWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
 
     override fun doWork(): Result {
         val context = applicationContext
         val sharedPreferences = context.getSharedPreferences("UserPrefs", Context.MODE_PRIVATE)
-        val username = sharedPreferences.getString("username", "") ?: ""
-        val password = sharedPreferences.getString("password", "") ?: ""
-        val groupId = inputData.getString("GROUP_ID") ?: return Result.failure()
+        
+        // Получить JWT токен админа
+        val token = AuthService.getAdminToken(context)
+        if (token == null) {
+            Log.e("UploadWorker", "Ошибка авторизации: токен не найден")
+            showToast(context, "Ошибка: требуется авторизация")
+            return Result.failure()
+        }
+        
+        val objectId = inputData.getString("OBJECT_ID") ?: return Result.failure()
         val imageUris = inputData.getStringArray("IMAGE_URIS") ?: return Result.failure()
+        val isVisibleToCustomer = inputData.getBoolean("IS_VISIBLE_TO_CUSTOMER", false)
 
-        if (username.isEmpty() || password.isEmpty()) {
-            Log.e("UploadWorker", "Ошибка авторизации: нет логина и пароля")
+        if (imageUris.isEmpty()) {
+            Log.e("UploadWorker", "Нет файлов для отправки!")
             return Result.failure()
         }
 
-        val credentials = "$username:$password"
-        val authHeader = "Basic " + Base64.encodeToString(credentials.toByteArray(), Base64.NO_WRAP)
-        val client = OkHttpClient()
-
-        val multipartBuilder = MultipartBody.Builder().setType(MultipartBody.FORM)
-        var fileAdded = false
+        // Загрузить каждый файл отдельно
+        var successCount = AtomicInteger(0)
+        var failureCount = AtomicInteger(0)
+        val latch = CountDownLatch(imageUris.size)
 
         imageUris.forEach { uriString ->
             val uri = Uri.parse(uriString)
             val file = uriToFile(context, uri)
 
             if (file != null && file.exists()) {
-                val requestBody = RequestBody.create("image/jpeg".toMediaTypeOrNull(), file)
-                multipartBuilder.addFormDataPart("files[]", file.name, requestBody)
-                fileAdded = true
+                // Загрузить файл через AdminService
+                AdminService.uploadPhoto(
+                    context = context,
+                    objectId = objectId,
+                    file = file,
+                    isVisibleToCustomer = isVisibleToCustomer,
+                    token = token,
+                    callback = { result ->
+                        if (result.isSuccess) {
+                            successCount.incrementAndGet()
+                            Log.d("UploadWorker", "Файл успешно загружен: ${file.name}")
+                        } else {
+                            failureCount.incrementAndGet()
+                            Log.e("UploadWorker", "Ошибка загрузки файла ${file.name}: ${result.exceptionOrNull()?.message}")
+                        }
+                        latch.countDown()
+                    }
+                )
             } else {
                 Log.e("UploadWorker", "Файл не найден: $uriString")
+                failureCount.incrementAndGet()
+                latch.countDown()
             }
         }
 
-        if (!fileAdded) {
-            Log.e("UploadWorker", "Нет файлов для отправки!")
-            return Result.failure()
+        // Дождаться завершения всех загрузок
+        try {
+            latch.await()
+        } catch (e: InterruptedException) {
+            Log.e("UploadWorker", "Ожидание прервано: ${e.message}")
+            return Result.retry()
         }
 
-        val requestBody = multipartBuilder.build()
-        val request = Request.Builder()
-            .url("https://country-house.online/wp-json/my-api/v1/groups/$groupId/media")
-            .addHeader("Authorization", authHeader)
-            .post(requestBody)
-            .build()
-
-        return try {
-            val response = client.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
-
-            if (response.isSuccessful) {
-                Log.d("UploadWorker", "Фото успешно загружены: $responseBody")
-                showToast(context, "Загрузка завершена!")
-                Result.success()
+        // Проверить результаты
+        if (successCount.get() > 0) {
+            val message = if (failureCount.get() > 0) {
+                "Загружено ${successCount.get()} из ${imageUris.size} файлов"
             } else {
-                Log.e("UploadWorker", "Ошибка загрузки: ${response.message}")
-                showToast(context, "Ошибка загрузки: ${response.message}")
-                Result.retry() // 🔄 Попробуем ещё раз позже
+                "Все файлы успешно загружены!"
             }
-        } catch (e: IOException) {
-            Log.e("UploadWorker", "Ошибка сети: ${e.message}")
-            showToast(context, "Ошибка сети!")
-            Result.retry() // 🔄 Повторим попытку
+            showToast(context, message)
+            Log.d("UploadWorker", message)
+            return Result.success()
+        } else {
+            showToast(context, "Ошибка загрузки всех файлов")
+            Log.e("UploadWorker", "Не удалось загрузить ни одного файла")
+            return Result.retry()
         }
     }
 

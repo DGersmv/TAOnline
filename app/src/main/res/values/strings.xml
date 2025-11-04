@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">CHOnline</string>
+    <string name="app_name">TAOnline</string>
+    <!-- Базовый URL API сервера - измените на ваш новый сервер -->
+    <!-- <string name="api_base_url">https://your-server.com/api/v1</string> -->
 </resources>

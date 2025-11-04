@@ -16,6 +16,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.chonline.network.fetchGroups
 import com.example.chonline.ui.theme.Black10
+import com.example.chonline.ui.theme.DarkGreen
+import com.example.chonline.ui.theme.White1
 import com.example.chonline.ui.theme.Orange1
 
 class MainActivity : ComponentActivity() {
@@ -46,7 +48,13 @@ fun MainScreen() {
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("Выбрать объект") })
+            TopAppBar(
+                title = { Text("Выбрать объект") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = DarkGreen,
+                    titleContentColor = White1
+                )
+            )
         }
     ) { paddingValues ->
         Column(
@@ -69,9 +77,12 @@ fun MainScreen() {
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Black10)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = DarkGreen,
+                                contentColor = White1
+                            )
                         ) {
-                            Text(groupName, color = Orange1)
+                            Text(groupName)
                         }
                     }
                 }

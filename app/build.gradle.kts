@@ -1,7 +1,19 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+}
+
+// Загрузка паролей из keystore.properties (если файл существует)
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    FileInputStream(keystorePropertiesFile).use { input ->
+        keystoreProperties.load(input)
+    }
 }
 
 android {
@@ -9,18 +21,35 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.chonline"
+        applicationId = "ru.taonline.app"  // Уникальный ID для RuStore
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2"
+        versionCode = 6  // Увеличено для новой публикации
+        versionName = "1.4"  // Обновлена версия
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            // Используем keystore файл если он существует
+            val keystoreFile = rootProject.file("taonline-release-key.jks")
+            if (keystoreFile.exists() && keystorePropertiesFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = keystoreProperties["KEYSTORE_PASSWORD"] as String? ?: ""
+                keyAlias = "taonline-key"
+                keyPassword = keystoreProperties["KEY_PASSWORD"] as String? ?: ""
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Используем подпись если keystore настроен
+            if (keystorePropertiesFile.exists() && rootProject.file("taonline-release-key.jks").exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

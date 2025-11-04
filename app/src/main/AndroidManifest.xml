@@ -30,7 +30,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.CHOnline"
+        android:theme="@style/Theme.TAOnline"
         tools:targetApi="31">
 
         <!-- Экран авторизации (LoginActivity) теперь основной -->
@@ -38,10 +38,26 @@
             android:name=".LoginActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.CHOnline">
+            android:theme="@style/Theme.TAOnline">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            
+            <!-- Deep link для загрузки (админ) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tashi-ani" android:host="upload" />
+            </intent-filter>
+            
+            <!-- Deep link для просмотра (заказчик) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="tashi-ani" android:host="view" />
             </intent-filter>
         </activity>
 
@@ -53,6 +69,21 @@
 
         <!-- 📌 Добавляем `UploadActivity` -->
         <activity android:name=".UploadActivity" android:exported="true"/>
+        
+        <!-- Экран просмотра фото для заказчика -->
+        <activity android:name=".PhotoViewActivity" android:exported="true"/>
+        
+        <!-- Экран выбора заказчиков (админ) -->
+        <activity android:name=".CustomersActivity" android:exported="true"/>
+        
+        <!-- Экран объектов заказчика (админ) -->
+        <activity android:name=".CustomerObjectsActivity" android:exported="true"/>
+        
+        <!-- Экран списка объектов для заказчика -->
+        <activity android:name=".CustomerObjectsListActivity" android:exported="true"/>
+        
+        <!-- Экран выбора папок объекта для заказчика -->
+        <activity android:name=".ObjectFoldersActivity" android:exported="true"/>
 
         <!-- 📌 Настройки `FileProvider` для работы с фото -->
         <provider
