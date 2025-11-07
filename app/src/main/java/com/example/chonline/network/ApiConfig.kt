@@ -53,6 +53,13 @@ object ApiConfig {
     fun getAdminUploadPhotosUrl(objectId: String): String {
         return "$BASE_URL/api/admin/objects/$objectId/photos"
     }
+
+    /**
+     * Получить URL для загрузки панорам админом
+     */
+    fun getAdminUploadPanoramasUrl(objectId: String): String {
+        return "$BASE_URL/api/admin/objects/$objectId/panoramas"
+    }
     
     /**
      * Получить URL для получения списка объектов заказчика

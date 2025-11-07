@@ -3,13 +3,20 @@ package com.example.chonline.network
 import android.content.Context
 import android.util.Log
 import com.example.chonline.network.ApiConfig
-import okhttp3.*
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.Result
 
 /**
  * Сервис для работы админа с загрузкой фото и управлением заказчиками
@@ -144,7 +151,7 @@ object AdminService {
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 Log.e(TAG, "Ошибка сети при получении информации о заказчике: ${e.message}")
-                callback(Result.failure(e))
+        callback(Result.failure(e))
             }
             
             override fun onResponse(call: Call, response: Response) {
@@ -226,18 +233,7 @@ object AdminService {
             return
         }
         
-        // Определить MIME тип файла
-        val mimeType = when {
-            file.name.endsWith(".jpg", ignoreCase = true) || 
-            file.name.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
-            file.name.endsWith(".png", ignoreCase = true) -> "image/png"
-            file.name.endsWith(".gif", ignoreCase = true) -> "image/gif"
-            file.name.endsWith(".webp", ignoreCase = true) -> "image/webp"
-            file.name.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
-            file.name.endsWith(".avi", ignoreCase = true) -> "video/x-msvideo"
-            file.name.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
-            else -> "application/octet-stream"
-        }
+        val mimeType = determineMimeType(file)
         
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -288,6 +284,89 @@ object AdminService {
                 }
             }
         })
+    }
+
+    /**
+     * Загрузить панораму в объект
+     */
+    fun uploadPanorama(
+        context: Context,
+        objectId: String,
+        file: File,
+        isVisibleToCustomer: Boolean = false,
+        token: String,
+        callback: (Result<JSONObject>) -> Unit
+    ) {
+        if (!file.exists()) {
+            callback(Result.failure(IOException("Файл не найден: ${file.path}")))
+            return
+        }
+
+        val mimeType = determineMimeType(file)
+
+        val requestBody = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart(
+                "file",
+                file.name,
+                RequestBody.create(mimeType.toMediaTypeOrNull(), file)
+            )
+            .addFormDataPart("isVisibleToCustomer", isVisibleToCustomer.toString())
+            .build()
+
+        val request = Request.Builder()
+            .url(ApiConfig.getAdminUploadPanoramasUrl(objectId))
+            .addHeader("Authorization", "Bearer $token")
+            .post(requestBody)
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "Ошибка сети при загрузке панорамы: ${e.message}")
+                callback(Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    try {
+                        val responseBody = response.body?.string() ?: "{}"
+                        val jsonResponse = JSONObject(responseBody)
+
+                        if (response.isSuccessful && jsonResponse.optBoolean("success", false)) {
+                            val panorama = jsonResponse.optJSONObject("panorama")
+                            if (panorama != null) {
+                                Log.d(TAG, "Панорама успешно загружена: ${panorama.optString("id")}")
+                                callback(Result.success(jsonResponse))
+                            } else {
+                                Log.e(TAG, "Данные панорамы не найдены в ответе")
+                                callback(Result.failure(IOException("Данные панорамы не получены")))
+                            }
+                        } else {
+                            val errorMessage = jsonResponse.optString("message", "Ошибка загрузки панорамы")
+                            Log.e(TAG, "Ошибка загрузки панорамы: $errorMessage")
+                            callback(Result.failure(IOException(errorMessage)))
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Ошибка парсинга ответа: ${e.message}")
+                        callback(Result.failure(e))
+                    }
+                }
+            }
+        })
+    }
+
+    private fun determineMimeType(file: File): String {
+        return when {
+            file.name.endsWith(".jpg", ignoreCase = true) ||
+            file.name.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
+            file.name.endsWith(".png", ignoreCase = true) -> "image/png"
+            file.name.endsWith(".gif", ignoreCase = true) -> "image/gif"
+            file.name.endsWith(".webp", ignoreCase = true) -> "image/webp"
+            file.name.endsWith(".mp4", ignoreCase = true) -> "video/mp4"
+            file.name.endsWith(".avi", ignoreCase = true) -> "video/x-msvideo"
+            file.name.endsWith(".mov", ignoreCase = true) -> "video/quicktime"
+            else -> "application/octet-stream"
+        }
     }
 }
 

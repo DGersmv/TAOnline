@@ -1,65 +1,82 @@
 package com.example.chonline
 
-import android.app.Activity
 import android.content.Context
-import android.net.Uri
 import android.os.Bundle
-import android.util.Base64
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
-import androidx.work.*
+import androidx.compose.ui.unit.dp
+import androidx.work.BackoffPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
 import kotlinx.coroutines.delay
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MultipartBody
-import okhttp3.RequestBody
-import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
 import java.util.concurrent.TimeUnit
+
+import com.example.chonline.UploadMediaType
+
+private const val TAG = "UploadActivity"
 
 class UploadActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val imageUris = intent.getStringArrayListExtra("IMAGE_URIS") ?: arrayListOf()
+        val mediaTypesRaw = intent.getStringArrayListExtra("MEDIA_TYPES") ?: arrayListOf()
         val objectId = intent.getStringExtra("OBJECT_ID") ?: "0"
         val isVisibleToCustomer = intent.getBooleanExtra("IS_VISIBLE_TO_CUSTOMER", false)
 
-        Log.d("UploadActivity", "Получены файлы: $imageUris")
-        Log.d("UploadActivity", "Объект ID: $objectId")
-        Log.d("UploadActivity", "Видимо для заказчика: $isVisibleToCustomer")
+        val resolvedTypes = resolveMediaTypes(imageUris, mediaTypesRaw)
+
+        Log.d(TAG, "Получены файлы: $imageUris")
+        Log.d(TAG, "Типы файлов: $resolvedTypes")
+        Log.d(TAG, "Объект ID: $objectId")
+        Log.d(TAG, "Видимо для заказчика: $isVisibleToCustomer")
 
         if (imageUris.isEmpty()) {
             Toast.makeText(this, "Ошибка: файлы не переданы!", Toast.LENGTH_SHORT).show()
-            Log.e("UploadActivity", "Ошибка: imageUris пустой!")
+            Log.e(TAG, "Ошибка: imageUris пустой!")
             finish()
             return
         }
 
         setContent {
-            UploadScreen(imageUris, objectId, isVisibleToCustomer) { finish() }
+            UploadScreen(imageUris, resolvedTypes, objectId, isVisibleToCustomer) { finish() }
         }
     }
 }
 
 @Composable
-fun UploadScreen(imageUris: List<String>, objectId: String, isVisibleToCustomer: Boolean, onUploadComplete: () -> Unit) {
+fun UploadScreen(
+    imageUris: List<String>,
+    mediaTypes: List<String>,
+    objectId: String,
+    isVisibleToCustomer: Boolean,
+    onUploadComplete: () -> Unit
+) {
     val context = LocalContext.current
-    var uploadStatus by remember { mutableStateOf("Подготовка к загрузке...") }
+    val uploadStatus = remember { mutableStateOf("Подготовка к загрузке...") }
 
     LaunchedEffect(Unit) {
-        startUploadWork(context, imageUris, objectId, isVisibleToCustomer)
-        uploadStatus = "Файлы поставлены в очередь загрузки..."
+        startUploadWork(context, imageUris, mediaTypes, objectId, isVisibleToCustomer)
+        uploadStatus.value = "Файлы поставлены в очередь загрузки..."
         delay(2000)
         onUploadComplete()
     }
@@ -73,16 +90,31 @@ fun UploadScreen(imageUris: List<String>, objectId: String, isVisibleToCustomer:
     ) {
         CircularProgressIndicator()
         Spacer(modifier = Modifier.height(16.dp))
-        Text(uploadStatus, style = MaterialTheme.typography.titleMedium)
+        Text(uploadStatus.value, style = MaterialTheme.typography.titleMedium)
     }
 }
 
-fun startUploadWork(context: Context, imageUris: List<String>, objectId: String, isVisibleToCustomer: Boolean = false) {
+private fun resolveMediaTypes(imageUris: List<String>, mediaTypesRaw: List<String>): List<String> {
+    if (imageUris.isEmpty()) return emptyList()
+    if (mediaTypesRaw.size != imageUris.size) {
+        return List(imageUris.size) { UploadMediaType.PHOTO.name }
+    }
+    return mediaTypesRaw
+}
+
+fun startUploadWork(
+    context: Context,
+    imageUris: List<String>,
+    mediaTypes: List<String>,
+    objectId: String,
+    isVisibleToCustomer: Boolean = false
+) {
     val workManager = WorkManager.getInstance(context)
 
     val uploadWork = OneTimeWorkRequestBuilder<UploadWorker>()
         .setInputData(workDataOf(
             "IMAGE_URIS" to imageUris.toTypedArray(),
+            "MEDIA_TYPES" to mediaTypes.toTypedArray(),
             "OBJECT_ID" to objectId,
             "IS_VISIBLE_TO_CUSTOMER" to isVisibleToCustomer
         ))
@@ -95,4 +127,5 @@ fun startUploadWork(context: Context, imageUris: List<String>, objectId: String,
 
     workManager.enqueue(uploadWork)
 }
+
 

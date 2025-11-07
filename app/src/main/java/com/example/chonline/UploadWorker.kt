@@ -12,14 +12,15 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.Result as KotlinResult
 
 class UploadWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
 
     override fun doWork(): Result {
         val context = applicationContext
-        val sharedPreferences = context.getSharedPreferences("UserPrefs", Context.MODE_PRIVATE)
         
         // Получить JWT токен админа
         val token = AuthService.getAdminToken(context)
@@ -31,6 +32,7 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
         
         val objectId = inputData.getString("OBJECT_ID") ?: return Result.failure()
         val imageUris = inputData.getStringArray("IMAGE_URIS") ?: return Result.failure()
+        val mediaTypes = inputData.getStringArray("MEDIA_TYPES")
         val isVisibleToCustomer = inputData.getBoolean("IS_VISIBLE_TO_CUSTOMER", false)
 
         if (imageUris.isEmpty()) {
@@ -38,36 +40,58 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
             return Result.failure()
         }
 
-        // Загрузить каждый файл отдельно
-        var successCount = AtomicInteger(0)
-        var failureCount = AtomicInteger(0)
+        val successCount = AtomicInteger(0)
+        val failureCount = AtomicInteger(0)
         val latch = CountDownLatch(imageUris.size)
 
-        imageUris.forEach { uriString ->
-            val uri = Uri.parse(uriString)
-            val file = uriToFile(context, uri)
+        imageUris.forEachIndexed { index, uriString ->
+            val type = mediaTypes
+                ?.getOrNull(index)
+                ?.let { runCatching { UploadMediaType.valueOf(it) }.getOrNull() }
+                ?: UploadMediaType.PHOTO
+
+            val file = uriToFile(context, uriString, type)
 
             if (file != null && file.exists()) {
-                // Загрузить файл через AdminService
-                AdminService.uploadPhoto(
-                    context = context,
-                    objectId = objectId,
-                    file = file,
-                    isVisibleToCustomer = isVisibleToCustomer,
-                    token = token,
-                    callback = { result ->
-                        if (result.isSuccess) {
-                            successCount.incrementAndGet()
-                            Log.d("UploadWorker", "Файл успешно загружен: ${file.name}")
-                        } else {
-                            failureCount.incrementAndGet()
-                            Log.e("UploadWorker", "Ошибка загрузки файла ${file.name}: ${result.exceptionOrNull()?.message}")
-                        }
-                        latch.countDown()
+                val uploadCallback: (KotlinResult<JSONObject>) -> Unit = { result ->
+                    if (result.isSuccess) {
+                        successCount.incrementAndGet()
+                        Log.d("UploadWorker", "Файл успешно загружен: ${file.name}")
+                    } else {
+                        failureCount.incrementAndGet()
+                        Log.e(
+                            "UploadWorker",
+                            "Ошибка загрузки файла ${file.name}: ${result.exceptionOrNull()?.message}"
+                        )
                     }
-                )
+                    file.delete()
+                    latch.countDown()
+                }
+
+                when (type) {
+                    UploadMediaType.PHOTO -> {
+                        AdminService.uploadPhoto(
+                            context = context,
+                            objectId = objectId,
+                            file = file,
+                            isVisibleToCustomer = isVisibleToCustomer,
+                            token = token,
+                            callback = uploadCallback
+                        )
+                    }
+                    UploadMediaType.PANORAMA -> {
+                        AdminService.uploadPanorama(
+                            context = context,
+                            objectId = objectId,
+                            file = file,
+                            isVisibleToCustomer = isVisibleToCustomer,
+                            token = token,
+                            callback = uploadCallback
+                        )
+                    }
+                }
             } else {
-                Log.e("UploadWorker", "Файл не найден: $uriString")
+                Log.e("UploadWorker", "Файл не найден или не может быть создан: $uriString")
                 failureCount.incrementAndGet()
                 latch.countDown()
             }
@@ -98,9 +122,11 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
         }
     }
 
-    private fun uriToFile(context: Context, uri: Uri): File? {
+    private fun uriToFile(context: Context, uriString: String, type: UploadMediaType): File? {
         return try {
-            val file = File(context.cacheDir, "upload_${System.currentTimeMillis()}.jpg")
+            val uri = Uri.parse(uriString)
+            val fileName = buildFileName(context, uri, type)
+            val file = File(context.cacheDir, fileName)
             context.contentResolver.openInputStream(uri).use { input ->
                 FileOutputStream(file).use { output ->
                     input?.copyTo(output)
@@ -110,6 +136,46 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
         } catch (e: IOException) {
             Log.e("UploadWorker", "Ошибка преобразования URI в файл: ${e.message}")
             null
+        }
+    }
+
+    private fun buildFileName(context: Context, uri: Uri, type: UploadMediaType): String {
+        val baseName = queryDisplayName(context, uri)
+            ?: "upload_${System.currentTimeMillis()}"
+        val extension = resolveExtension(context, uri, baseName, type)
+        val sanitizedBase = baseName.substringBeforeLast('.')
+        return "${sanitizedBase}_${System.currentTimeMillis()}.$extension"
+    }
+
+    private fun queryDisplayName(context: Context, uri: Uri): String? {
+        val projection = arrayOf(android.provider.OpenableColumns.DISPLAY_NAME)
+        context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (index != -1 && cursor.moveToFirst()) {
+                return cursor.getString(index)
+            }
+        }
+        return null
+    }
+
+    private fun resolveExtension(
+        context: Context,
+        uri: Uri,
+        baseName: String,
+        type: UploadMediaType
+    ): String {
+        val existingExt = baseName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+        if (existingExt.isNotBlank()) {
+            return existingExt
+        }
+        val mimeType = context.contentResolver.getType(uri)
+        return when {
+            mimeType.equals("image/png", ignoreCase = true) -> "png"
+            mimeType.equals("image/webp", ignoreCase = true) -> "webp"
+            mimeType.equals("image/gif", ignoreCase = true) -> "gif"
+            mimeType.equals("image/jpeg", ignoreCase = true) -> "jpg"
+            type == UploadMediaType.PANORAMA -> "jpg"
+            else -> "jpg"
         }
     }
 
