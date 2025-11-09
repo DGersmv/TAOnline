@@ -2,7 +2,6 @@ package com.example.chonline
 
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
@@ -50,7 +49,7 @@ class PhotoViewActivity : ComponentActivity() {
         Log.d("PhotoViewActivity", "Email: $email, Object ID: $objectId, Folder ID: $folderId")
         
         if (email.isEmpty() || objectId == "0") {
-            Toast.makeText(this, "Ошибка: не переданы необходимые параметры", Toast.LENGTH_SHORT).show()
+            showTopToast("Ошибка: не переданы необходимые параметры")
             finish()
             return
         }
@@ -80,7 +79,7 @@ fun PhotoViewScreen(email: String, objectId: String, objectTitle: String = "Об
             } else {
                 errorMessage = result.exceptionOrNull()?.message ?: "Ошибка загрузки фото"
                 Log.e("PhotoViewActivity", "Ошибка: $errorMessage")
-                Toast.makeText(context, errorMessage, Toast.LENGTH_SHORT).show()
+                context.showTopToast(errorMessage ?: "Ошибка загрузки фото")
             }
         }
     }

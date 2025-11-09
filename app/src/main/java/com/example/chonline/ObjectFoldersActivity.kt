@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -32,7 +31,7 @@ class ObjectFoldersActivity : ComponentActivity() {
         val customerEmail = intent.getStringExtra("CUSTOMER_EMAIL") ?: ""
         
         if (objectId.isEmpty() || customerEmail.isEmpty()) {
-            Toast.makeText(this, "Ошибка: не переданы необходимые параметры", Toast.LENGTH_SHORT).show()
+            showTopToast("Ошибка: не переданы необходимые параметры")
             finish()
             return
         }

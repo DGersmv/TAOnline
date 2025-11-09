@@ -3,7 +3,6 @@ package com.example.chonline
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import android.widget.Toast
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.example.chonline.network.AdminService
@@ -125,16 +124,60 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
     private fun uriToFile(context: Context, uriString: String, type: UploadMediaType): File? {
         return try {
             val uri = Uri.parse(uriString)
+            
+            // Для всех файлов пытаемся использовать оригинальный файл без обработки
+            // Это важно для файлов из галереи (и фото, и панорамы)
+            val filePath = getRealPathFromURI(context, uri)
+            if (filePath != null) {
+                val directFile = File(filePath)
+                if (directFile.exists() && directFile.canRead()) {
+                    Log.d("UploadWorker", "Используется оригинальный файл без сжатия: $filePath (тип: ${type.name})")
+                    return directFile
+                }
+            }
+            
+            // Если прямой путь недоступен, копируем без сжатия
+            // Используем буферизованное копирование для сохранения качества
             val fileName = buildFileName(context, uri, type)
             val file = File(context.cacheDir, fileName)
             context.contentResolver.openInputStream(uri).use { input ->
                 FileOutputStream(file).use { output ->
-                    input?.copyTo(output)
+                    input?.copyTo(output, bufferSize = 8192)
                 }
             }
+            Log.d("UploadWorker", "Файл скопирован без сжатия: ${file.absolutePath} (тип: ${type.name})")
             file
         } catch (e: IOException) {
             Log.e("UploadWorker", "Ошибка преобразования URI в файл: ${e.message}")
+            null
+        }
+    }
+    
+    /**
+     * Получить реальный путь к файлу из URI
+     * Для файлов из галереи важно использовать оригинальный файл без обработки
+     */
+    private fun getRealPathFromURI(context: Context, uri: Uri): String? {
+        return try {
+            when {
+                // Для file:// URI возвращаем путь напрямую
+                uri.scheme == "file" -> uri.path
+                
+                // Для content:// URI пытаемся получить путь через MediaStore
+                uri.scheme == "content" -> {
+                    val projection = arrayOf(android.provider.MediaStore.Images.Media.DATA)
+                    context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                        val columnIndex = cursor.getColumnIndexOrThrow(android.provider.MediaStore.Images.Media.DATA)
+                        if (cursor.moveToFirst()) {
+                            cursor.getString(columnIndex)
+                        } else null
+                    }
+                }
+                
+                else -> null
+            }
+        } catch (e: Exception) {
+            Log.e("UploadWorker", "Ошибка получения пути к файлу: ${e.message}")
             null
         }
     }
@@ -180,8 +223,6 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
     }
 
     private fun showToast(context: Context, message: String) {
-        android.os.Handler(android.os.Looper.getMainLooper()).post {
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
+        context.postTopToast(message)
     }
 }

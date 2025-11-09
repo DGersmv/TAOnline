@@ -179,7 +179,7 @@ fun LoginScreen() {
                     // Попытка входа как админ
                     loginAsAdmin(context, username, password, sharedPreferences)
                 } else {
-                    Toast.makeText(context, "Введите логин и пароль", Toast.LENGTH_SHORT).show()
+                    context.showTopToast("Введите логин и пароль")
                 }
             },
             modifier = Modifier
@@ -203,7 +203,7 @@ fun LoginScreen() {
                 AuthService.logout(context) // Очистить токен админа
                 username = ""
                 password = ""
-                Toast.makeText(context, "Данные удалены, вы вышли из системы", Toast.LENGTH_SHORT).show()
+                context.showTopToast("Данные удалены, вы вышли из системы")
             },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
@@ -260,7 +260,7 @@ fun loginAsAdmin(
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             if (result.isSuccess) {
                 val token = result.getOrNull()
-                Toast.makeText(context, "Успешный вход!", Toast.LENGTH_SHORT).show()
+                context.showTopToast("Успешный вход!")
                 
                 // Очистить старые данные из SharedPreferences (удалить username и password)
                 sharedPreferences.edit().apply {
@@ -314,7 +314,7 @@ fun loginAsAdmin(
                 }
             } else {
                 val error = result.exceptionOrNull()?.message ?: "Ошибка входа"
-                Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                context.showTopToast(error)
             }
         }
     }
@@ -327,7 +327,7 @@ fun loginAndFetchGroups(
     password: String
 ) {
     if (username.isEmpty() || password.isEmpty()) {
-        Toast.makeText(context, "Введите логин и пароль", Toast.LENGTH_SHORT).show()
+        context.showTopToast("Введите логин и пароль")
         return
     }
 
@@ -338,9 +338,9 @@ fun loginAndFetchGroups(
     fetchGroups(context) { result ->
         if (result.isSuccess) {
             val groups = result.getOrNull()?.joinToString("\n") ?: "Нет данных"
-            Toast.makeText(context, "Группы:\n$groups", Toast.LENGTH_LONG).show()
+            context.showTopToast("Группы:\n$groups", Toast.LENGTH_LONG)
         } else {
-            Toast.makeText(context, "Ошибка загрузки групп: ${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+            context.showTopToast("Ошибка загрузки групп: ${result.exceptionOrNull()?.message}")
         }
     }
 }

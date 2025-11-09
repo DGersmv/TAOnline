@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -34,7 +33,7 @@ class CustomerObjectsListActivity : ComponentActivity() {
             ?: ""
         
         if (customerEmail.isEmpty()) {
-            Toast.makeText(this, "Ошибка: не передан email заказчика", Toast.LENGTH_SHORT).show()
+            showTopToast("Ошибка: не передан email заказчика")
             finish()
             return
         }

@@ -67,6 +67,9 @@
         <!-- Экран для работы с фото -->
         <activity android:name=".PhotoActivity" android:exported="true"/>
 
+        <!-- Activity для съемки 360 панорам -->
+        <activity android:name=".Panorama360Activity" android:exported="false"/>
+
         <!-- 📌 Добавляем `UploadActivity` -->
         <activity android:name=".UploadActivity" android:exported="true"/>
         

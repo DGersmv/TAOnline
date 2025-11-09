@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,11 +48,16 @@ import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
 import com.example.chonline.ui.theme.DarkGreen
 import com.example.chonline.ui.theme.White1
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
 import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 class PhotoActivity : ComponentActivity() {
 
@@ -101,12 +105,62 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
     var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingCaptureType by remember { mutableStateOf<UploadMediaType?>(null) }
     var pendingPickerType by remember { mutableStateOf(UploadMediaType.PHOTO) }
+    val appContext = context.applicationContext
+    val workManager = remember { WorkManager.getInstance(appContext) }
+    val queuePrefs = remember { context.getSharedPreferences(PANORAMA_QUEUE_PREFS, Context.MODE_PRIVATE) }
+    val pendingPanoramaWorkIds = remember { mutableStateListOf<String>() }
+
+    fun persistUploadItems() {
+        val jsonArray = org.json.JSONArray().apply {
+            uploadItems.forEach { item ->
+                put(
+                    org.json.JSONObject().apply {
+                        put("uri", item.uri.toString())
+                        put("type", item.type.name)
+                    }
+                )
+            }
+        }
+        queuePrefs.edit().putString(KEY_STORED_UPLOAD_ITEMS, jsonArray.toString()).apply()
+    }
+
+    fun persistPendingWorkIds() {
+        queuePrefs.edit()
+            .putStringSet(KEY_PENDING_WORK_IDS, pendingPanoramaWorkIds.toSet())
+            .apply()
+    }
+
+    LaunchedEffect(Unit) {
+        // Восстановить заголовок загрузок
+        val stored = queuePrefs.getString(KEY_STORED_UPLOAD_ITEMS, null)
+        if (!stored.isNullOrBlank()) {
+            runCatching {
+                val array = org.json.JSONArray(stored)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val uriString = obj.optString("uri", null)
+                    val typeName = obj.optString("type", UploadMediaType.PHOTO.name)
+                    if (!uriString.isNullOrBlank()) {
+                        val uri = Uri.parse(uriString)
+                        val type = runCatching { UploadMediaType.valueOf(typeName) }.getOrDefault(UploadMediaType.PHOTO)
+                        if (uploadItems.none { it.uri == uri }) {
+                            uploadItems.add(UploadMediaItem(uri, type))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Восстановить отложенные работы
+        val storedIds = queuePrefs.getStringSet(KEY_PENDING_WORK_IDS, emptySet()) ?: emptySet()
+        pendingPanoramaWorkIds.addAll(storedIds)
+    }
 
     val requestCameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted ->
             if (!isGranted) {
-                Toast.makeText(context, "Камера не доступна: разрешение не предоставлено", Toast.LENGTH_SHORT).show()
+                context.showTopToast("Камера не доступна: разрешение не предоставлено")
             }
         }
     )
@@ -122,6 +176,7 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
         onResult = { uris: List<Uri> ->
             if (uris.isNotEmpty()) {
                 uploadItems.addAll(uris.map { UploadMediaItem(it, pendingPickerType) })
+                persistUploadItems()
                 Log.d("PhotoActivity", "Добавлены файлы (${pendingPickerType.name}) из галереи: $uris")
             } else {
                 Log.e("PhotoActivity", "Ошибка: Список uri пуст при выборе из галереи")
@@ -136,14 +191,88 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
         val type = pendingCaptureType
         if (success && targetUri != null && type != null) {
             uploadItems.add(UploadMediaItem(targetUri, type))
+            persistUploadItems()
             Log.d("PhotoActivity", "Добавлен файл (${type.name}) с камеры: $targetUri")
         } else if (!success && targetUri != null) {
             context.contentResolver.delete(targetUri, null, null)
+            context.showTopToast("Ошибка при съёмке файла")
             Log.e("PhotoActivity", "Съёмка отменена или завершилась с ошибкой для $targetUri")
-            Toast.makeText(context, "Ошибка при съёмке файла", Toast.LENGTH_SHORT).show()
         }
         tempPhotoUri = null
         pendingCaptureType = null
+    }
+
+    // Launcher для получения результата от Panorama360Activity
+    val panorama360Launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == ComponentActivity.RESULT_OK) {
+            val workIdString = result.data?.getStringExtra("PANORAMA_WORK_ID")
+            if (!workIdString.isNullOrBlank()) {
+                if (!pendingPanoramaWorkIds.contains(workIdString)) {
+                    pendingPanoramaWorkIds.add(workIdString)
+                    persistPendingWorkIds()
+                    Log.d("PhotoActivity", "Фоновая обработка панорамы запущена: $workIdString")
+                }
+                context.showTopToast("Панорама обрабатывается в фоне")
+            }
+            val panoramaUri = result.data?.getStringExtra("PANORAMA_URI")
+            if (panoramaUri != null) {
+                val uri = Uri.parse(panoramaUri)
+                uploadItems.add(UploadMediaItem(uri, UploadMediaType.PANORAMA))
+                persistUploadItems()
+                Log.d("PhotoActivity", "Добавлена 360 панорама: $uri")
+                context.showTopToast("360° панорама добавлена")
+            }
+        }
+    }
+
+    pendingPanoramaWorkIds.toList().forEach { idString ->
+        LaunchedEffect(idString) {
+            val workId = runCatching { UUID.fromString(idString) }.getOrNull()
+            if (workId == null) {
+                pendingPanoramaWorkIds.remove(idString)
+                return@LaunchedEffect
+            }
+
+            workManager.getWorkInfoByIdFlow(workId).collectLatest { info ->
+                if (info == null) return@collectLatest
+                when (info.state) {
+                    WorkInfo.State.SUCCEEDED -> {
+                        val outputUri = info.outputData.getString(PanoramaStitchWorker.KEY_OUTPUT_URI)
+                        if (!outputUri.isNullOrBlank()) {
+                            val uri = Uri.parse(outputUri)
+                            uploadItems.add(UploadMediaItem(uri, UploadMediaType.PANORAMA))
+                            context.showTopToast("Панорама готова")
+                            Log.d("PhotoActivity", "Панорама готова: $uri")
+                            persistUploadItems()
+                        } else {
+                            Log.w("PhotoActivity", "Работа $idString завершилась без URI")
+                            context.showTopToast("Панорама обработана, но файл не найден")
+                        }
+                        pendingPanoramaWorkIds.remove(idString)
+                        persistPendingWorkIds()
+                        cancel()
+                    }
+                    WorkInfo.State.FAILED -> {
+                        pendingPanoramaWorkIds.remove(idString)
+                        persistPendingWorkIds()
+                        context.showTopToast("Ошибка обработки панорамы")
+                        Log.e("PhotoActivity", "Фоновая работа $idString завершилась ошибкой")
+                        cancel()
+                    }
+                    WorkInfo.State.CANCELLED -> {
+                        pendingPanoramaWorkIds.remove(idString)
+                        persistPendingWorkIds()
+                        Log.w("PhotoActivity", "Фоновая работа $idString отменена")
+                        cancel()
+                    }
+                    else -> {
+                        // ENQUEUED / RUNNING / BLOCKED
+                    }
+                }
+            }
+        }
     }
 
     Scaffold(
@@ -192,6 +321,14 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (pendingPanoramaWorkIds.isNotEmpty()) {
+                Text(
+                    text = "Обработка панорам: ${pendingPanoramaWorkIds.size}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = DarkGreen
+                )
+            }
+
             if (uploadItems.isNotEmpty()) {
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 100.dp),
@@ -209,7 +346,8 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
                                 .clip(RoundedCornerShape(8.dp))
                                 .clickable {
                                     if (uploadItems.remove(item)) {
-                                        Toast.makeText(context, "Файл удалён", Toast.LENGTH_SHORT).show()
+                                        context.showTopToast("Файл удалён")
+                                        persistUploadItems()
                                     }
                                 }
                         ) {
@@ -289,26 +427,6 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
 
                 Button(
                     onClick = {
-                        val uri = createTempImageUri(context, UploadMediaType.PHOTO)
-                        if (uri != null) {
-                            tempPhotoUri = uri
-                            pendingCaptureType = UploadMediaType.PHOTO
-                            takePictureLauncher.launch(uri)
-                        } else {
-                            Toast.makeText(context, "Не удалось создать файл для фото", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary,
-                        contentColor = MaterialTheme.colorScheme.onSecondary
-                    )
-                ) {
-                    Text("Снять фото на камеру")
-                }
-
-                Button(
-                    onClick = {
                         pendingPickerType = UploadMediaType.PANORAMA
                         pickImageLauncher.launch("image/*")
                     },
@@ -323,22 +441,20 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
 
                 Button(
                     onClick = {
-                        val uri = createTempImageUri(context, UploadMediaType.PANORAMA)
-                        if (uri != null) {
-                            tempPhotoUri = uri
-                            pendingCaptureType = UploadMediaType.PANORAMA
-                            takePictureLauncher.launch(uri)
-                        } else {
-                            Toast.makeText(context, "Не удалось создать файл для панорамы", Toast.LENGTH_SHORT).show()
+                        // Запускаем Activity для съемки 360 панорамы
+                        val intent = Intent(context, Panorama360Activity::class.java).apply {
+                            putExtra("OBJECT_ID", objectId)
+                            putExtra("OBJECT_TITLE", objectTitle)
                         }
+                        panorama360Launcher.launch(intent)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary,
-                        contentColor = MaterialTheme.colorScheme.onSecondary
+                        containerColor = DarkGreen,
+                        contentColor = White1
                     )
                 ) {
-                    Text("Снять панораму")
+                    Text("Снять панораму 360°")
                 }
 
                 Button(
@@ -357,25 +473,30 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
                             intent.putExtra("IS_VISIBLE_TO_CUSTOMER", false)
                             context.startActivity(intent)
                         } else {
-                            Toast.makeText(context, "Выберите файлы перед отправкой", Toast.LENGTH_SHORT).show()
+                            context.showTopToast("Выберите файлы перед отправкой")
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp), // На 10% выше стандартной кнопки (стандарт ~50dp)
                     colors = ButtonDefaults.buttonColors(
                         containerColor = DarkGreen,
                         contentColor = White1
                     )
                 ) {
-                    Text("Отправить файлы")
+                    Text("ОТПРАВИТЬ", style = MaterialTheme.typography.titleMedium)
                 }
 
                 Button(
-                    onClick = { uploadItems.clear() },
+                    onClick = {
+                        uploadItems.clear()
+                        persistUploadItems()
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     enabled = uploadItems.isNotEmpty()
                 ) {
-                    Text("Удалить все файлы")
+                    Text("Удалить из списка")
                 }
             }
         }
@@ -402,3 +523,7 @@ private fun createTempImageUri(context: Context, type: UploadMediaType): Uri? {
         null
     }
 }
+
+private const val PANORAMA_QUEUE_PREFS = "panorama_queue_prefs"
+private const val KEY_PENDING_WORK_IDS = "pending_work_ids"
+private const val KEY_STORED_UPLOAD_ITEMS = "stored_upload_items"

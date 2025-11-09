@@ -24,8 +24,8 @@ android {
         applicationId = "ru.taonline.app"  // Уникальный ID для RuStore
         minSdk = 24
         targetSdk = 35
-        versionCode = 6  // Увеличено для новой публикации
-        versionName = "1.4"  // Обновлена версия
+        versionCode = 7  // Увеличено для новой публикации
+        versionName = "1.5"  // Обновлена версия
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -89,5 +89,20 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.2.2") // Для загрузки изображений
     implementation("androidx.activity:activity-compose:1.7.2") // Для Activity Result API
     implementation ("androidx.work:work-runtime-ktx:2.9.0")
+    
+    // CameraX для съемки панорам без сжатия и 360 панорам
+    val cameraxVersion = "1.3.3"
+    implementation("androidx.camera:camera-core:${cameraxVersion}")
+    implementation("androidx.camera:camera-camera2:${cameraxVersion}")
+    implementation("androidx.camera:camera-lifecycle:${cameraxVersion}")
+    implementation("androidx.camera:camera-view:${cameraxVersion}")
+    implementation("androidx.camera:camera-extensions:${cameraxVersion}")
+    
+    // OpenCV для качественной склейки панорам
+    // Используем официальный OpenCV из Maven Central (начиная с версии 4.9.0)
+    implementation("org.opencv:opencv:4.9.0")
+
+    // ExifInterface для корректной ориентации изображений
+    implementation("androidx.exifinterface:exifinterface:1.3.6")
 
 }

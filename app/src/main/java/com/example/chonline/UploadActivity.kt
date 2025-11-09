@@ -3,7 +3,6 @@ package com.example.chonline
 import android.content.Context
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -51,7 +50,7 @@ class UploadActivity : ComponentActivity() {
         Log.d(TAG, "Видимо для заказчика: $isVisibleToCustomer")
 
         if (imageUris.isEmpty()) {
-            Toast.makeText(this, "Ошибка: файлы не переданы!", Toast.LENGTH_SHORT).show()
+            showTopToast("Ошибка: файлы не переданы!")
             Log.e(TAG, "Ошибка: imageUris пустой!")
             finish()
             return

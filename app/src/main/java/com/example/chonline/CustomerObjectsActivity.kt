@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -36,7 +35,7 @@ class CustomerObjectsActivity : ComponentActivity() {
         val customerEmail = intent.getStringExtra("CUSTOMER_EMAIL") ?: ""
         
         if (customerId.isEmpty()) {
-            Toast.makeText(this, "Ошибка: не передан ID заказчика", Toast.LENGTH_SHORT).show()
+            showTopToast("Ошибка: не передан ID заказчика")
             finish()
             return
         }

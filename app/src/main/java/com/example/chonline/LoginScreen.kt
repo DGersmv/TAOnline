@@ -3,7 +3,6 @@ package com.example.authapp
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -18,6 +17,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
 import com.example.chonline.network.fetchGroups
+import android.widget.Toast
+import com.example.chonline.showTopToast
 
 class LoginActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,9 +70,9 @@ fun LoginScreen() {
         Button(
             onClick = {
                 if (username.isNotEmpty() && password.isNotEmpty()) {
-                    Toast.makeText(context, "Авторизация успешна!", Toast.LENGTH_SHORT).show()
+                    context.showTopToast("Авторизация успешна!")
                 } else {
-                    Toast.makeText(context, "Введите логин и пароль", Toast.LENGTH_SHORT).show()
+                    context.showTopToast("Введите логин и пароль")
                 }
             },
             modifier = Modifier.fillMaxWidth()
@@ -116,7 +117,7 @@ fun loginAndFetchGroups(
     password: String
 ) {
     if (username.isEmpty() || password.isEmpty()) {
-        Toast.makeText(context, "Введите логин и пароль", Toast.LENGTH_SHORT).show()
+        context.showTopToast("Введите логин и пароль")
         return
     }
 
@@ -127,9 +128,9 @@ fun loginAndFetchGroups(
     fetchGroups(context) { result ->
         if (result.isSuccess) {
             val groups = result.getOrNull()?.joinToString("\n") ?: "Нет данных"
-            Toast.makeText(context, "Группы:\n$groups", Toast.LENGTH_LONG).show()
+            context.showTopToast("Группы:\n$groups", Toast.LENGTH_LONG)
         } else {
-            Toast.makeText(context, "Ошибка загрузки групп: ${result.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+            context.showTopToast("Ошибка загрузки групп: ${result.exceptionOrNull()?.message}")
         }
     }
 }
