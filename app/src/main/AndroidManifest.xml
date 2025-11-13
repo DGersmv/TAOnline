@@ -73,6 +73,9 @@
         <!-- 📌 Добавляем `UploadActivity` -->
         <activity android:name=".UploadActivity" android:exported="true"/>
         
+        <!-- Экран выбора медиафайлов -->
+        <activity android:name=".MediaPickerActivity" android:exported="false"/>
+        
         <!-- Экран просмотра фото для заказчика -->
         <activity android:name=".PhotoViewActivity" android:exported="true"/>
         

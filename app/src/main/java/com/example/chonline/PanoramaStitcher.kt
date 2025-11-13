@@ -18,35 +18,18 @@ import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
-import org.opencv.core.DMatch
-import org.opencv.core.KeyPoint
 import org.opencv.core.Mat
-import org.opencv.core.MatOfDMatch
-import org.opencv.core.MatOfKeyPoint
-import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
-import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Rect
-import org.opencv.core.Scalar
-import org.opencv.core.Size
-import org.opencv.calib3d.Calib3d
-import org.opencv.features2d.BFMatcher
-import org.opencv.features2d.ORB
 import org.opencv.imgproc.Imgproc
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.abs
-import kotlin.math.ceil
-import kotlin.math.cos
-import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.tan
 
 /**
  * Класс для склейки нескольких изображений в одну 180° панораму с простым перекрытием
@@ -61,12 +44,8 @@ class PanoramaStitcher {
 
         private const val MAX_INPUT_WIDTH = 1600
         private const val MAX_INPUT_HEIGHT = 1600
-        private const val OVERLAP_FRACTION = 0.35f
+        private const val OVERLAP_FRACTION = 0.25f
         private const val MAX_VERTICAL_SHIFT = 40
-        private const val MIN_MATCHES_FOR_HOMOGRAPHY = 20
-        private const val GAUSSIAN_KERNEL = 31.0
-        private const val DEFAULT_FOV_DEGREES = 75.0
-        private const val RATIO_TEST_THRESHOLD = 0.8f
         
         /**
          * Инициализировать OpenCV (вызывается при первом использовании)
@@ -143,20 +122,20 @@ class PanoramaStitcher {
                 }
             }
 
-            val panoramaMat = stitchWithHomography(resized) ?: run {
-                Log.w(TAG, "Гомография не сработала, возвращаемся к простому наложению")
+            val panoramaMat = stitchWithStitcher(resized) ?: run {
+                Log.w(TAG, "OpenCV Stitcher не справился, возвращаемся к простому наложению")
                 stitchWithLinearOverlap(resized)
             }
 
-            val alignedPanorama = alignLoopSeam(panoramaMat)
-            panoramaMat.release()
-
             resized.forEach { it.recycle() }
 
-            Log.d(TAG, "Панорама успешно склеена. Размер: ${alignedPanorama.width()}x${alignedPanorama.height()}")
+            val croppedPanorama = cropBlackBorders(panoramaMat)
+            panoramaMat.release()
 
-            val outputUri = saveMatAsUri(context, alignedPanorama)
-            alignedPanorama.release()
+            Log.d(TAG, "Панорама успешно склеена. Размер: ${croppedPanorama.width()}x${croppedPanorama.height()}")
+
+            val outputUri = saveMatAsUri(context, croppedPanorama)
+            croppedPanorama.release()
 
             Log.d(TAG, "Панорама успешно сохранена: $outputUri")
             outputUri
@@ -166,206 +145,66 @@ class PanoramaStitcher {
         }
     }
 
-    private fun stitchWithHomography(bitmaps: List<Bitmap>): Mat? {
+    private fun stitchWithStitcher(bitmaps: List<Bitmap>): Mat? {
         if (bitmaps.size < 2) return null
 
-        val projectedMats = ArrayList<Mat>(bitmaps.size)
-        try {
+        val stitcherClass = try {
+            Class.forName("org.opencv.stitching.Stitcher")
+        } catch (e: ClassNotFoundException) {
+            Log.w(TAG, "OpenCV Stitcher недоступен в сборке: ${e.message}")
+            return null
+        } catch (e: UnsatisfiedLinkError) {
+            Log.w(TAG, "OpenCV Stitcher недоступен: ${e.message}")
+            return null
+        }
+
+        val sourceMats = ArrayList<Mat>(bitmaps.size)
+        val panorama = Mat()
+
+        return try {
             bitmaps.forEachIndexed { index, bitmap ->
                 val rgba = Mat()
                 Utils.bitmapToMat(bitmap, rgba)
                 val bgr = Mat()
                 Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
                 rgba.release()
-
-                val cylindrical = applyCylindricalProjection(bgr)
-                bgr.release()
-
-                projectedMats.add(cylindrical)
-                Log.d(TAG, "Cylindrical projection for frame #$index -> ${cylindrical.cols()}x${cylindrical.rows()}")
+                sourceMats.add(bgr)
+                Log.d(TAG, "Stitcher input frame #$index -> ${bgr.cols()}x${bgr.rows()}")
             }
 
-            val homographies = mutableListOf(Mat.eye(3, 3, CvType.CV_64F))
-            val orb = ORB.create(4000)
+            val panoramaMode = stitcherClass.getField("PANORAMA").getInt(null)
+            val createMethod = stitcherClass.getMethod("create", Int::class.javaPrimitiveType)
+            val stitcherInstance = createMethod.invoke(null, panoramaMode)
 
-            try {
-                for (i in 0 until projectedMats.size - 1) {
-                    val homography = computeHomographyBetween(projectedMats[i], projectedMats[i + 1], orb)
-                    if (homography == null || homography.empty()) {
-                        Log.w(TAG, "Не удалось вычислить гомографию для пары $i-${i + 1}")
-                        homography?.release()
-                        homographies.forEach { it.release() }
-                        projectedMats.forEach { it.release() }
-                        return null
-                    }
+            runCatching {
+                stitcherClass.getMethod("setWaveCorrection", Boolean::class.javaPrimitiveType)
+                    .invoke(stitcherInstance, true)
+            }
+            runCatching {
+                stitcherClass.getMethod("setPanoConfidenceThresh", Double::class.javaPrimitiveType)
+                    .invoke(stitcherInstance, 0.7)
+            }
 
-                    val cumulative = Mat()
-                    Core.gemm(homographies[i], homography, 1.0, Mat(), 0.0, cumulative)
-                    homographies.add(cumulative)
-                    homography.release()
-                }
+            val stitchMethod = stitcherClass.getMethod("stitch", java.util.List::class.java, Mat::class.java)
+            val status = stitchMethod.invoke(stitcherInstance, sourceMats, panorama) as? Int ?: -1
 
-                var minX = Double.POSITIVE_INFINITY
-                var minY = Double.POSITIVE_INFINITY
-                var maxX = Double.NEGATIVE_INFINITY
-                var maxY = Double.NEGATIVE_INFINITY
+            val okStatus = stitcherClass.getField("OK").getInt(null)
 
-                val corners = arrayOf(
-                    Point(0.0, 0.0),
-                    Point(projectedMats[0].cols().toDouble(), 0.0),
-                    Point(projectedMats[0].cols().toDouble(), projectedMats[0].rows().toDouble()),
-                    Point(0.0, projectedMats[0].rows().toDouble())
-                )
-
-                for (i in projectedMats.indices) {
-                    val srcCorners = MatOfPoint2f(*corners)
-                    val dstCorners = MatOfPoint2f()
-                    Core.perspectiveTransform(srcCorners, dstCorners, homographies[i])
-
-                    dstCorners.toArray().forEach { pt ->
-                        minX = min(minX, pt.x)
-                        minY = min(minY, pt.y)
-                        maxX = max(maxX, pt.x)
-                        maxY = max(maxY, pt.y)
-                    }
-
-                    srcCorners.release()
-                    dstCorners.release()
-                }
-
-                val shiftX = if (minX < 0) -minX else 0.0
-                val shiftY = if (minY < 0) -minY else 0.0
-
-                val translation = Mat.eye(3, 3, CvType.CV_64F).apply {
-                    put(0, 2, shiftX)
-                    put(1, 2, shiftY)
-                }
-
-                val adjustedHomographies = homographies.map { h ->
-                    val adjusted = Mat()
-                    Core.gemm(translation, h, 1.0, Mat(), 0.0, adjusted)
-                    adjusted
-                }
-                translation.release()
-
-                val outputWidth = ceil(maxX + shiftX).coerceAtLeast(1.0).roundToInt()
-                val outputHeight = ceil(maxY + shiftY).coerceAtLeast(1.0).roundToInt()
-
-                val accumulator = Mat.zeros(outputHeight, outputWidth, CvType.CV_32FC3)
-                val weightSum = Mat.zeros(outputHeight, outputWidth, CvType.CV_32FC1)
-
-                for (i in projectedMats.indices) {
-                    val warped = Mat()
-                    Imgproc.warpPerspective(
-                        projectedMats[i],
-                        warped,
-                        adjustedHomographies[i],
-                        Size(outputWidth.toDouble(), outputHeight.toDouble()),
-                        Imgproc.INTER_LINEAR,
-                        Core.BORDER_CONSTANT,
-                        Scalar(0.0, 0.0, 0.0)
-                    )
-
-                    val warpedFloat = Mat()
-                    warped.convertTo(warpedFloat, CvType.CV_32FC3, 1.0 / 255.0)
-
-                    val maskGray = Mat()
-                    Imgproc.cvtColor(warped, maskGray, Imgproc.COLOR_BGR2GRAY)
-                    Imgproc.threshold(maskGray, maskGray, 0.0, 255.0, Imgproc.THRESH_BINARY)
-                    maskGray.convertTo(maskGray, CvType.CV_32FC1, 1.0 / 255.0)
-                    Imgproc.GaussianBlur(maskGray, maskGray, Size(GAUSSIAN_KERNEL, GAUSSIAN_KERNEL), 0.0)
-                    Core.min(maskGray, Scalar(1.0), maskGray)
-
-                    val maskChannels = mutableListOf(maskGray, maskGray, maskGray)
-                    val maskColor = Mat()
-                    Core.merge(maskChannels, maskColor)
-
-                    Core.multiply(warpedFloat, maskColor, warpedFloat)
-                    Core.add(accumulator, warpedFloat, accumulator)
-                    Core.add(weightSum, maskGray, weightSum)
-
-                    maskColor.release()
-                    warped.release()
-                    warpedFloat.release()
-                    maskGray.release()
-                }
-
-                homographies.forEach { it.release() }
-                adjustedHomographies.forEach { it.release() }
-                projectedMats.forEach { it.release() }
-
-                val accumChannels = ArrayList<Mat>()
-                Core.split(accumulator, accumChannels)
-
-                val weightSafe = Mat()
-                Core.max(weightSum, Scalar(1e-6), weightSafe)
-
-                for (channel in accumChannels) {
-                    Core.divide(channel, weightSafe, channel)
-                }
-
-                val resultFloat = Mat()
-                Core.merge(accumChannels, resultFloat)
-
-                val result = Mat()
-                resultFloat.convertTo(result, CvType.CV_8UC3, 255.0)
-
-                accumulator.release()
-                weightSum.release()
-                weightSafe.release()
-                resultFloat.release()
-                accumChannels.forEach { it.release() }
-
-                val aligned = alignLoopSeam(result)
-                result.release()
-                return aligned
-            } finally {
-                orb.clear()
+            if (status == okStatus) {
+                Log.d(TAG, "OpenCV Stitcher вернул OK: ${panorama.cols()}x${panorama.rows()}")
+                panorama
+            } else {
+                Log.w(TAG, "OpenCV Stitcher завершился со статусом $status")
+                panorama.release()
+                null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Ошибка при склейке через гомографию: ${e.message}")
-            projectedMats.forEach { it.release() }
-            return null
+            Log.e(TAG, "Ошибка OpenCV Stitcher: ${e.message}", e)
+            panorama.release()
+            null
+        } finally {
+            sourceMats.forEach { it.release() }
         }
-    }
-
-    private fun applyCylindricalProjection(src: Mat, fovDegrees: Double = DEFAULT_FOV_DEGREES): Mat {
-        val width = src.cols()
-        val height = src.rows()
-        val fovRadians = Math.toRadians(fovDegrees)
-        val focalLength = width / (2.0 * tan(fovRadians / 2.0))
-        val centerX = width / 2.0
-        val centerY = height / 2.0
-
-        val mapX = Mat(height, width, CvType.CV_32FC1)
-        val mapY = Mat(height, width, CvType.CV_32FC1)
-
-        val thetaRow = DoubleArray(width)
-        for (x in 0 until width) {
-            thetaRow[x] = (x - centerX) / focalLength
-        }
-
-        for (y in 0 until height) {
-            val mapXRow = FloatArray(width)
-            val mapYRow = FloatArray(width)
-            val yDiff = y - centerY
-            for (x in 0 until width) {
-                val theta = thetaRow[x]
-                val cosTheta = cos(theta).takeIf { abs(it) > 1e-6 } ?: 1e-6
-                val sourceX = focalLength * tan(theta) + centerX
-                val sourceY = yDiff / cosTheta + centerY
-                mapXRow[x] = sourceX.toFloat()
-                mapYRow[x] = sourceY.toFloat()
-            }
-            mapX.put(y, 0, mapXRow)
-            mapY.put(y, 0, mapYRow)
-        }
-
-        val dst = Mat(height, width, src.type())
-        Imgproc.remap(src, dst, mapX, mapY, Imgproc.INTER_LINEAR, Core.BORDER_CONSTANT, Scalar(0.0, 0.0, 0.0))
-        mapX.release()
-        mapY.release()
-        return dst
     }
 
     private fun stitchWithLinearOverlap(bitmaps: List<Bitmap>): Mat {
@@ -475,90 +314,6 @@ class PanoramaStitcher {
         return Pair(dx, dy)
     }
 
-    private fun computeHomographyBetween(
-        reference: Mat,
-        candidate: Mat,
-        orb: ORB
-    ): Mat? {
-        val grayReference = Mat()
-        val grayCandidate = Mat()
-        Imgproc.cvtColor(reference, grayReference, Imgproc.COLOR_BGR2GRAY)
-        Imgproc.cvtColor(candidate, grayCandidate, Imgproc.COLOR_BGR2GRAY)
-
-        val keypointsRef = MatOfKeyPoint()
-        val keypointsCand = MatOfKeyPoint()
-        val descriptorsRef = Mat()
-        val descriptorsCand = Mat()
-
-        orb.detectAndCompute(grayReference, Mat(), keypointsRef, descriptorsRef)
-        orb.detectAndCompute(grayCandidate, Mat(), keypointsCand, descriptorsCand)
-
-        grayReference.release()
-        grayCandidate.release()
-
-        if (descriptorsRef.empty() || descriptorsCand.empty()) {
-            keypointsRef.release()
-            keypointsCand.release()
-            descriptorsRef.release()
-            descriptorsCand.release()
-            Log.w(TAG, "ORB не нашёл ключевых точек")
-            return null
-        }
-
-        val matcher = BFMatcher.create(Core.NORM_HAMMING, false)
-        val knnMatches = ArrayList<MatOfDMatch>()
-        matcher.knnMatch(descriptorsRef, descriptorsCand, knnMatches, 2)
-
-        val goodMatches = ArrayList<DMatch>()
-        for (mat in knnMatches) {
-            val matches = mat.toArray()
-            if (matches.size >= 2) {
-                val m1 = matches[0]
-                val m2 = matches[1]
-                if (m1.distance < RATIO_TEST_THRESHOLD * m2.distance) {
-                    goodMatches.add(m1)
-                }
-            }
-            mat.release()
-        }
-        matcher.clear()
-
-        val refKeypoints = keypointsRef.toArray()
-        val candKeypoints = keypointsCand.toArray()
-
-        keypointsRef.release()
-        keypointsCand.release()
-        descriptorsRef.release()
-        descriptorsCand.release()
-
-        if (goodMatches.size < MIN_MATCHES_FOR_HOMOGRAPHY) {
-            Log.w(TAG, "Недостаточно хороших совпадений: ${goodMatches.size}")
-            return null
-        }
-
-        val refPoints = ArrayList<Point>(goodMatches.size)
-        val candPoints = ArrayList<Point>(goodMatches.size)
-
-        for (match in goodMatches) {
-            refPoints.add(refKeypoints[match.queryIdx].pt)
-            candPoints.add(candKeypoints[match.trainIdx].pt)
-        }
-
-        val refMat = MatOfPoint2f(*refPoints.toTypedArray())
-        val candMat = MatOfPoint2f(*candPoints.toTypedArray())
-
-        val mask = Mat()
-        val homography = Calib3d.findHomography(candMat, refMat, Calib3d.RANSAC, 4.0, mask)
-        val inliers = Core.countNonZero(mask)
-        Log.d(TAG, "Гомография: найдено совпадений=${goodMatches.size}, инлайеров=$inliers")
-
-        refMat.release()
-        candMat.release()
-        mask.release()
-
-        return homography
-    }
-
     private fun blendOverlap(
         basePixels: IntArray,
         baseIndex: Int,
@@ -586,34 +341,54 @@ class PanoramaStitcher {
     private fun cropBlackBorders(src: Mat): Mat {
         val gray = Mat()
         Imgproc.cvtColor(src, gray, Imgproc.COLOR_BGR2GRAY)
-        val thresh = Mat()
-        Imgproc.threshold(gray, thresh, 1.0, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(gray, gray, 1.0, 255.0, Imgproc.THRESH_BINARY)
 
-        val points = Mat()
-        Core.findNonZero(thresh, points)
+        val height = gray.rows()
+        val width = gray.cols()
+
+        var top = 0
+        while (top < height) {
+            val row = gray.row(top)
+            val nonZero = Core.countNonZero(row)
+            row.release()
+            if (nonZero > 0) break
+            top++
+        }
+
+        var bottom = height - 1
+        while (bottom >= top) {
+            val row = gray.row(bottom)
+            val nonZero = Core.countNonZero(row)
+            row.release()
+            if (nonZero > 0) break
+            bottom--
+        }
+
+        var left = 0
+        while (left < width) {
+            val col = gray.col(left)
+            val nonZero = Core.countNonZero(col)
+            col.release()
+            if (nonZero > 0) break
+            left++
+        }
+
+        var right = width - 1
+        while (right >= left) {
+            val col = gray.col(right)
+            val nonZero = Core.countNonZero(col)
+            col.release()
+            if (nonZero > 0) break
+            right--
+        }
 
         gray.release()
-        thresh.release()
 
-        if (points.empty()) {
-            points.release()
+        if (top >= bottom || left >= right) {
             return src.clone()
         }
 
-        val pointList = ArrayList<Point>(points.rows())
-        for (i in 0 until points.rows()) {
-            val data = points.get(i, 0)
-            if (data != null && data.size >= 2) {
-                pointList.add(Point(data[0], data[1]))
-            }
-        }
-        points.release()
-
-        val matOfPoint = MatOfPoint()
-        matOfPoint.fromList(pointList)
-        val rect = Imgproc.boundingRect(matOfPoint)
-        matOfPoint.release()
-
+        val rect = Rect(left, top, right - left + 1, bottom - top + 1)
         return Mat(src, rect).clone()
     }
 
@@ -665,56 +440,13 @@ class PanoramaStitcher {
         }
     }
 
-    private fun alignLoopSeam(panorama: Mat, seamFraction: Double = 0.2): Mat {
-        val width = panorama.cols()
-        val height = panorama.rows()
-        if (width <= 0 || height <= 0) return panorama.clone()
-
-        val seamWidth = (width * seamFraction).roundToInt().coerceIn(32, width / 2)
-        if (seamWidth <= 0 || seamWidth * 2 > width) {
-            Log.d(TAG, "Seam alignment skipped: seamWidth=$seamWidth width=$width")
-            return panorama.clone()
-        }
-
-        val leftStrip = panorama.colRange(0, seamWidth)
-        val rightStrip = panorama.colRange(width - seamWidth, width)
-
-        val leftGray = Mat()
-        val rightGray = Mat()
-        Imgproc.cvtColor(leftStrip, leftGray, Imgproc.COLOR_BGR2GRAY)
-        Imgproc.cvtColor(rightStrip, rightGray, Imgproc.COLOR_BGR2GRAY)
-        leftStrip.release()
-        rightStrip.release()
-
-        val leftExtended = Mat()
-        Core.hconcat(listOf(leftGray, leftGray), leftExtended)
-
-        val matchResult = Mat()
-        Imgproc.matchTemplate(leftExtended, rightGray, matchResult, Imgproc.TM_CCOEFF_NORMED)
-        val mmr = Core.minMaxLoc(matchResult)
-        val offsetX = mmr.maxLoc.x.roundToInt()
-        val dx = (seamWidth - offsetX).coerceIn(0, seamWidth)
-
-        leftGray.release()
-        rightGray.release()
-        leftExtended.release()
-        matchResult.release()
-
-        if (dx <= 0) {
-            Log.d(TAG, "Seam alignment: dx<=0 (offsetX=$offsetX), оставляем оригинал")
-            return panorama.clone()
-        }
-
-        val cropWidth = width - dx
-        val cropped = Mat(panorama, Rect(0, 0, cropWidth, height)).clone()
-        Log.d(TAG, "Seam alignment: cropped $dx px to align edges (offsetX=$offsetX)")
-        return cropped
-    }
-
     private fun saveMatAsUri(context: Context, mat: Mat): Uri? {
         return try {
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-            val fileName = "PANO360_STITCHED_${timestamp}.jpg"
+            val timestamp = System.currentTimeMillis()
+            val formattedTimestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date(timestamp))
+            val fileName = "PANO360_STITCHED_${formattedTimestamp}.jpg"
+            val albumName = "Camera"
+            val dcimCameraPath = "${Environment.DIRECTORY_DCIM}/$albumName/"
 
             val bitmap = Bitmap.createBitmap(mat.cols(), mat.rows(), Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(mat, bitmap)
@@ -723,7 +455,17 @@ class PanoramaStitcher {
                 val contentValues = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                     put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Panorama360")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, dcimCameraPath)
+                    put(MediaStore.Images.Media.BUCKET_DISPLAY_NAME, albumName)
+                    put(
+                        MediaStore.Images.Media.BUCKET_ID,
+                        dcimCameraPath.lowercase(Locale.getDefault()).hashCode()
+                    )
+                    put(MediaStore.Images.Media.DATE_ADDED, timestamp / 1000)
+                    put(MediaStore.Images.Media.DATE_TAKEN, timestamp)
+                    put(MediaStore.Images.Media.WIDTH, bitmap.width)
+                    put(MediaStore.Images.Media.HEIGHT, bitmap.height)
+                    put(MediaStore.Images.Media.ORIENTATION, 0)
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }
 
@@ -750,10 +492,11 @@ class PanoramaStitcher {
                 }
             } else {
                 val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                val panoDir = File(picturesDir, "Panorama360").apply {
+                val dcimDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+                val cameraDir = File(dcimDir, albumName).apply {
                     if (!exists()) mkdirs()
                 }
-                val imageFile = File(panoDir, fileName)
+                val imageFile = File(cameraDir, fileName)
 
                 FileOutputStream(imageFile).use { out ->
                     if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)) {

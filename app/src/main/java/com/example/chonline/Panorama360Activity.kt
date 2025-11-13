@@ -50,7 +50,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.min
 import kotlin.math.roundToInt
+
+private const val ESTIMATED_STEP_DEGREES = 32f
+private const val FULL_ROTATION_DEGREES = 360f
 
 /**
  * Activity для съемки 360 панорам с визуальным совмещением.
@@ -99,8 +103,7 @@ fun Panorama360Screen(
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
 
     // Съёмка
-    var currentShot by remember { mutableStateOf(0) }
-    val totalShots = 12
+    var shotCount by remember { mutableStateOf(0) }
     var capturedImages by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var isProcessing by remember { mutableStateOf(false) }
     var previousImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -112,7 +115,7 @@ fun Panorama360Screen(
 
     // Подгружаем последний снимок
     LaunchedEffect(capturedImages.size) {
-        if (capturedImages.isNotEmpty() && currentShot > 0) {
+        if (capturedImages.isNotEmpty() && shotCount > 0) {
             val previousUri = capturedImages.last()
             previousImageBitmap = withContext(Dispatchers.IO) {
                 val bitmap = loadBitmapFromUri(context, previousUri)
@@ -221,7 +224,7 @@ fun Panorama360Screen(
                     )
 
                     if (
-                        currentShot > 0 &&
+                        shotCount > 0 &&
                         previousImageBitmap != null &&
                         cameraContentHeightPx > 0 &&
                         cameraContentWidthPx > 0
@@ -246,77 +249,119 @@ fun Panorama360Screen(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f)
                 )
             ) {
-                Text(
-                    text = if (currentShot == 0)
-                        "Наведите камеру на начальную точку и нажмите 'Начать'"
-                    else
-                        "Снимок ${currentShot + 1} из $totalShots - Поверните телефон и совместите изображения",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (currentShot == 0)
-                        MaterialTheme.colorScheme.onSurface
-                    else
-                        DarkGreen,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                )
+                val approxAngle = ((shotCount - 1).coerceAtLeast(0)) * ESTIMATED_STEP_DEGREES
+                val progressAngle = min(approxAngle, FULL_ROTATION_DEGREES)
+                val progress = (progressAngle / FULL_ROTATION_DEGREES).coerceIn(0f, 1f)
+
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = if (shotCount == 0)
+                            "Наведите камеру на начальную точку и нажмите 'Начать'"
+                        else
+                            "Снимков: $shotCount. Продолжайте поворот, пока не замкнёте круг, затем нажмите 'Завершить'.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (shotCount == 0)
+                            MaterialTheme.colorScheme.onSurface
+                        else
+                            DarkGreen
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Ориентировочный охват: ~${progressAngle.roundToInt()}° из 360°",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
 
             // Кнопка съёмки / индикатор
             if (!isProcessing) {
-                Button(
-                    onClick = {
-                        val capture = imageCapture
-                        if (capture != null) {
-                            isProcessing = true
-                            capturePanoramaShot(
-                                context = context,
-                                imageCapture = capture,
-                                shotNumber = currentShot
-                            ) { uri ->
-                                if (uri != null) {
-                                    capturedImages = capturedImages + uri
-
-                                    if (currentShot < totalShots - 1) {
-                                        currentShot++
-                                        context.showTopToast("Снимок $currentShot из $totalShots готов")
-                                        isProcessing = false
-                                    } else {
-                                        val workId = UUID.randomUUID()
-                                        val request = OneTimeWorkRequestBuilder<PanoramaStitchWorker>()
-                                            .setId(workId)
-                                            .setInputData(
-                                                PanoramaStitchWorker.createInputData(
-                                                    imageUris = capturedImages,
-                                                    objectId = objectId
-                                                )
-                                            )
-                                            .build()
-
-                                        workManager.enqueue(request)
-                                        context.showTopToast("Панорама обрабатывается в фоне")
-                                        isProcessing = false
-                                        onPanoramaScheduled(workId)
-                                    }
-                                } else {
-                                    context.showTopToast("Ошибка при съемке")
-                                    isProcessing = false
-                                }
-                            }
-                        }
-                    },
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .height(56.dp),
-                    enabled = !isProcessing && imageCapture != null,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DarkGreen,
-                        contentColor = White1
-                    )
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text(
-                        text = if (currentShot == 0) "Начать" else "Снять",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Button(
+                        onClick = {
+                            val capture = imageCapture
+                            if (capture != null) {
+                                isProcessing = true
+                                capturePanoramaShot(
+                                    context = context,
+                                    imageCapture = capture,
+                                    shotNumber = shotCount
+                                ) { uri ->
+                                    if (uri != null) {
+                                        capturedImages = capturedImages + uri
+                                        shotCount++
+                                        context.showTopToast("Снимок $shotCount готов")
+                                        isProcessing = false
+                                    } else {
+                                        context.showTopToast("Ошибка при съемке")
+                                        isProcessing = false
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        enabled = !isProcessing && imageCapture != null,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DarkGreen,
+                            contentColor = White1
+                        )
+                    ) {
+                        Text(
+                            text = if (shotCount == 0) "Начать" else "Снять",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            if (shotCount < 2) {
+                                context.showTopToast("Нужно минимум два кадра")
+                                return@Button
+                            }
+
+                            isProcessing = true
+
+                            val workId = UUID.randomUUID()
+                            val request = OneTimeWorkRequestBuilder<PanoramaStitchWorker>()
+                                .setId(workId)
+                                .setInputData(
+                                    PanoramaStitchWorker.createInputData(
+                                        imageUris = capturedImages,
+                                        objectId = objectId
+                                    )
+                                )
+                                .build()
+
+                            workManager.enqueue(request)
+                            context.showTopToast("Панорама обрабатывается в фоне")
+                            onPanoramaScheduled(workId)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        enabled = shotCount >= 2,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = DarkGreen
+                        )
+                    ) {
+                        Text(
+                            text = "Завершить",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
                 }
             } else {
                 Button(
@@ -356,7 +401,7 @@ private fun PreviousShotOverlay(
     cameraContentWidthPx: Int,
     cameraContentHeightPx: Int,
     cameraOffsetTopPx: Int,
-    overlayFraction: Float = 0.35f,
+    overlayFraction: Float = 0.25f,
     overlayAlpha: Float = 0.6f,
     modifier: Modifier = Modifier
 ) {
