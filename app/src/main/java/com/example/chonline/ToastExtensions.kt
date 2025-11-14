@@ -6,7 +6,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.widget.Toast
 
-fun Context.showTopToast(message: String, duration: Int = Toast.LENGTH_SHORT, yOffsetDp: Int = 64) {
+fun Context.showTopToast(message: String, duration: Int = Toast.LENGTH_SHORT, yOffsetDp: Int = 24) {
     val toastContext = applicationContext ?: this
     val toast = Toast.makeText(toastContext, message, duration)
     val yOffsetPx = (toastContext.resources.displayMetrics.density * yOffsetDp).toInt()
@@ -14,7 +14,7 @@ fun Context.showTopToast(message: String, duration: Int = Toast.LENGTH_SHORT, yO
     toast.show()
 }
 
-fun Context.postTopToast(message: String, duration: Int = Toast.LENGTH_SHORT, yOffsetDp: Int = 64) {
+fun Context.postTopToast(message: String, duration: Int = Toast.LENGTH_SHORT, yOffsetDp: Int = 24) {
     Handler(Looper.getMainLooper()).post {
         showTopToast(message, duration, yOffsetDp)
     }

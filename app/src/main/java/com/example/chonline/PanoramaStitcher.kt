@@ -3,7 +3,9 @@ package com.example.chonline
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Environment
 import android.util.Log
@@ -28,6 +30,7 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -72,7 +75,9 @@ class PanoramaStitcher {
      */
     suspend fun stitchPanorama(
         imageUris: List<Uri>,
-        context: Context
+        context: Context,
+        alignmentOffsetX: Float = 0f,
+        alignmentOffsetY: Float = 0f
     ): Uri? = withContext(Dispatchers.IO) {
         try {
             if (imageUris.isEmpty()) {
@@ -122,12 +127,18 @@ class PanoramaStitcher {
                 }
             }
 
-            val panoramaMat = stitchWithStitcher(resized) ?: run {
+            val preparedBitmaps = applyAlignmentOffsets(
+                bitmaps = resized,
+                offsetXFraction = alignmentOffsetX,
+                offsetYFraction = alignmentOffsetY
+            )
+
+            val panoramaMat = stitchWithStitcher(preparedBitmaps) ?: run {
                 Log.w(TAG, "OpenCV Stitcher не справился, возвращаемся к простому наложению")
-                stitchWithLinearOverlap(resized)
+                stitchWithLinearOverlap(preparedBitmaps)
             }
 
-            resized.forEach { it.recycle() }
+            preparedBitmaps.forEach { it.recycle() }
 
             val croppedPanorama = cropBlackBorders(panoramaMat)
             panoramaMat.release()
@@ -312,6 +323,66 @@ class PanoramaStitcher {
         val dx = bestX - (matFirst.cols() - matSecond.cols())
         val dy = (bestY - resultRows / 2).coerceIn(-MAX_VERTICAL_SHIFT, MAX_VERTICAL_SHIFT)
         return Pair(dx, dy)
+    }
+
+    private fun applyAlignmentOffsets(
+        bitmaps: List<Bitmap>,
+        offsetXFraction: Float,
+        offsetYFraction: Float
+    ): List<Bitmap> {
+        if (bitmaps.size < 2) return bitmaps
+        val clampedX = offsetXFraction.coerceIn(-1f, 1f)
+        val clampedY = offsetYFraction.coerceIn(-1f, 1f)
+        if (clampedX == 0f && clampedY == 0f) return bitmaps
+
+        val lastIndex = bitmaps.lastIndex
+        if (lastIndex < 1) return bitmaps
+
+        val lastBitmap = bitmaps[lastIndex]
+        val width = lastBitmap.width
+        val height = lastBitmap.height
+        if (width <= 0 || height <= 0) return bitmaps
+
+        val dx = (clampedX * width / 2f).roundToInt()
+        val dy = (clampedY * height / 2f).roundToInt()
+        if (dx == 0 && dy == 0) return bitmaps
+
+        val config = lastBitmap.config ?: Bitmap.Config.ARGB_8888
+        val shifted = Bitmap.createBitmap(width, height, config)
+        val canvas = Canvas(shifted)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true }
+
+        canvas.drawBitmap(lastBitmap, dx.toFloat(), dy.toFloat(), paint)
+
+        if (dx != 0) {
+            val fillWidth = abs(dx).coerceAtMost(width)
+            val srcX = if (dx > 0) lastBitmap.width - 1 else 0
+            val srcRect = android.graphics.Rect(srcX, 0, srcX + 1, lastBitmap.height)
+            val dstRect = if (dx > 0) {
+                android.graphics.Rect(0, 0, fillWidth, height)
+            } else {
+                android.graphics.Rect(width - fillWidth, 0, width, height)
+            }
+            canvas.drawBitmap(lastBitmap, srcRect, dstRect, paint)
+        }
+
+        if (dy != 0) {
+            val fillHeight = abs(dy).coerceAtMost(height)
+            val srcY = if (dy > 0) lastBitmap.height - 1 else 0
+            val srcRect = android.graphics.Rect(0, srcY, lastBitmap.width, srcY + 1)
+            val dstRect = if (dy > 0) {
+                android.graphics.Rect(0, 0, width, fillHeight)
+            } else {
+                android.graphics.Rect(0, height - fillHeight, width, height)
+            }
+            canvas.drawBitmap(lastBitmap, srcRect, dstRect, paint)
+        }
+
+        lastBitmap.recycle()
+
+        val mutable = bitmaps.toMutableList()
+        mutable[lastIndex] = shifted
+        return mutable
     }
 
     private fun blendOverlap(

@@ -17,11 +17,32 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,16 +50,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import kotlinx.coroutines.launch
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.chonline.ui.theme.DarkGreen
@@ -52,6 +78,10 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.min
 import kotlin.math.roundToInt
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 
 private const val ESTIMATED_STEP_DEGREES = 32f
 private const val FULL_ROTATION_DEGREES = 360f
@@ -85,6 +115,7 @@ class Panorama360Activity : ComponentActivity() {
             )
         }
     }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,6 +130,14 @@ fun Panorama360Screen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val appContext = context.applicationContext
     val workManager = remember { WorkManager.getInstance(appContext) }
+    val coroutineScope = rememberCoroutineScope()
+    val alignmentSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sensorManager = remember {
+        context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    }
+    val rotationSensor = remember {
+        sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+    }
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
 
@@ -108,10 +147,72 @@ fun Panorama360Screen(
     var isProcessing by remember { mutableStateOf(false) }
     var previousImageBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
+    var showAlignmentSheet by remember { mutableStateOf(false) }
+    var alignmentFirstBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var alignmentLastBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var alignmentOffsetX by remember { mutableStateOf(0f) }
+    var alignmentOffsetY by remember { mutableStateOf(0f) }
+    var alignmentLoading by remember { mutableStateOf(false) }
+    var alignmentError by remember { mutableStateOf<String?>(null) }
+
+    fun clearAlignmentPreview() {
+        alignmentFirstBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+        alignmentLastBitmap?.let { bitmap ->
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
+        }
+        alignmentFirstBitmap = null
+        alignmentLastBitmap = null
+        alignmentLoading = false
+        alignmentError = null
+        alignmentOffsetX = 0f
+        alignmentOffsetY = 0f
+    }
+
     // Геометрия видимой части превью камеры (после FIT_CENTER)
     var cameraContentWidthPx by remember { mutableStateOf(0) }
     var cameraContentHeightPx by remember { mutableStateOf(0) }
     var cameraOffsetTopPx by remember { mutableStateOf(0) }
+    var pitchDegrees by remember { mutableFloatStateOf(0f) }
+
+    DisposableEffect(rotationSensor) {
+        if (rotationSensor == null) {
+            return@DisposableEffect onDispose { }
+        }
+
+        val rotationMatrix = FloatArray(9)
+        val orientationAngles = FloatArray(3)
+
+        val listener = object : SensorEventListener {
+            override fun onSensorChanged(event: SensorEvent?) {
+                if (event?.sensor?.type != Sensor.TYPE_ROTATION_VECTOR) return
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                // pitch = rotation around X axis, convert to degrees
+                val pitch = orientationAngles[1] * (180f / Math.PI.toFloat())
+                pitchDegrees = pitch
+            }
+
+            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+                // no-op
+            }
+        }
+
+        sensorManager.registerListener(
+            listener,
+            rotationSensor,
+            SensorManager.SENSOR_DELAY_UI
+        )
+
+        onDispose {
+            sensorManager.unregisterListener(listener)
+        }
+    }
 
     // Подгружаем последний снимок
     LaunchedEffect(capturedImages.size) {
@@ -119,19 +220,72 @@ fun Panorama360Screen(
             val previousUri = capturedImages.last()
             previousImageBitmap = withContext(Dispatchers.IO) {
                 val bitmap = loadBitmapFromUri(context, previousUri)
-                bitmap?.let {
-                    if (it.width > it.height) {
-                        val matrix = Matrix().apply { postRotate(90f) }
-                        val rotated = Bitmap.createBitmap(
-                            it, 0, 0, it.width, it.height, matrix, true
-                        )
-                        it.recycle()
-                        rotated
-                    } else {
-                        it
-                    }
-                }
+                bitmap?.let { ensurePortraitBitmap(it) }
             }
+        }
+    }
+
+    if (showAlignmentSheet) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                showAlignmentSheet = false
+                clearAlignmentPreview()
+            },
+            sheetState = alignmentSheetState
+        ) {
+            PanoramaAlignmentSheetContent(
+                alignmentFirstBitmap = alignmentFirstBitmap,
+                alignmentLastBitmap = alignmentLastBitmap,
+                alignmentHorizontalOffset = alignmentOffsetX,
+                alignmentVerticalOffset = alignmentOffsetY,
+                alignmentLoading = alignmentLoading,
+                alignmentError = alignmentError,
+                onHorizontalOffsetChange = { alignmentOffsetX = it },
+                onVerticalOffsetChange = { alignmentOffsetY = it },
+                onStartStitch = {
+                    val workId = UUID.randomUUID()
+                    val request = OneTimeWorkRequestBuilder<PanoramaStitchWorker>()
+                        .setId(workId)
+                        .setInputData(
+                            PanoramaStitchWorker.createInputData(
+                                imageUris = capturedImages,
+                                objectId = objectId,
+                                alignmentOffsetX = alignmentOffsetX,
+                                alignmentOffsetY = alignmentOffsetY
+                            )
+                        )
+                        .build()
+
+                    workManager.enqueue(request)
+                    context.showTopToast("Панорама обрабатывается в фоне")
+                    clearAlignmentPreview()
+                    showAlignmentSheet = false
+                    onPanoramaScheduled(workId)
+                },
+                onKeepShots = {
+                    showAlignmentSheet = false
+                    clearAlignmentPreview()
+                    context.showTopToast("Оставляем кадры без склейки")
+                },
+                onCancelAll = {
+                    val imagesToDelete = capturedImages
+                    clearAlignmentPreview()
+                    coroutineScope.launch {
+                        deleteCapturedImages(context, imagesToDelete)
+                    }
+                    capturedImages = emptyList()
+                    shotCount = 0
+                    previousImageBitmap?.let { bitmap ->
+                        if (!bitmap.isRecycled) {
+                            bitmap.recycle()
+                        }
+                    }
+                    previousImageBitmap = null
+                    showAlignmentSheet = false
+                    isProcessing = false
+                    context.showTopToast("Съёмка панорамы отменена")
+                }
+            )
         }
     }
 
@@ -237,6 +391,15 @@ fun Panorama360Screen(
                             modifier = Modifier.fillMaxSize()
                         )
                     }
+
+                    if (cameraContentHeightPx > 0 && cameraContentWidthPx > 0) {
+                        HorizonLevelOverlay(
+                            cameraContentHeightPx = cameraContentHeightPx,
+                            cameraOffsetTopPx = cameraOffsetTopPx,
+                            pitchDegrees = pitchDegrees,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
                 }
             }
 
@@ -320,7 +483,8 @@ fun Panorama360Screen(
                     ) {
                         Text(
                             text = if (shotCount == 0) "Начать" else "Снять",
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
                         )
                     }
 
@@ -331,22 +495,33 @@ fun Panorama360Screen(
                                 return@Button
                             }
 
-                            isProcessing = true
+                            val firstUri = capturedImages.firstOrNull()
+                            val lastUri = capturedImages.lastOrNull()
+                            if (firstUri == null || lastUri == null) {
+                                context.showTopToast("Не удалось подготовить предпросмотр")
+                                return@Button
+                            }
 
-                            val workId = UUID.randomUUID()
-                            val request = OneTimeWorkRequestBuilder<PanoramaStitchWorker>()
-                                .setId(workId)
-                                .setInputData(
-                                    PanoramaStitchWorker.createInputData(
-                                        imageUris = capturedImages,
-                                        objectId = objectId
-                                    )
-                                )
-                                .build()
+                            alignmentOffsetX = 0f
+                            alignmentOffsetY = 0f
+                            alignmentError = null
+                            alignmentLoading = true
+                            showAlignmentSheet = true
 
-                            workManager.enqueue(request)
-                            context.showTopToast("Панорама обрабатывается в фоне")
-                            onPanoramaScheduled(workId)
+                            coroutineScope.launch {
+                                val first = withContext(Dispatchers.IO) {
+                                    loadBitmapFromUri(context, firstUri)?.let { ensurePortraitBitmap(it) }
+                                }
+                                val last = withContext(Dispatchers.IO) {
+                                    loadBitmapFromUri(context, lastUri)?.let { ensurePortraitBitmap(it) }
+                                }
+                                alignmentFirstBitmap = first
+                                alignmentLastBitmap = last
+                                alignmentLoading = false
+                                if (first == null || last == null) {
+                                    alignmentError = "Не удалось загрузить кадры для сверки"
+                                }
+                            }
                         },
                         modifier = Modifier
                             .weight(1f)
@@ -453,6 +628,253 @@ private fun PreviousShotOverlay(
                 dstSize = IntSize(overlayWidthPx, cameraContentHeightPx),
                 alpha = overlayAlpha
             )
+        }
+    }
+}
+
+/**
+ * Лазерный уровень: статичная линия по центру и динамическая линия по наклону устройства.
+ */
+@Composable
+private fun HorizonLevelOverlay(
+    cameraContentHeightPx: Int,
+    cameraOffsetTopPx: Int,
+    pitchDegrees: Float,
+    modifier: Modifier = Modifier,
+    maxTiltDegrees: Float = 8f
+) {
+    if (cameraContentHeightPx <= 0) return
+    val density = LocalDensity.current
+    val centerLineY = cameraOffsetTopPx + cameraContentHeightPx / 2f
+    val normalizedTilt = (pitchDegrees / maxTiltDegrees).coerceIn(-1f, 1f)
+    val tiltOffsetPx = normalizedTilt * (cameraContentHeightPx / 2f)
+
+    Canvas(modifier = modifier) {
+        val widthPx = size.width
+        val centerYPx = centerLineY.coerceIn(0f, size.height)
+        drawLine(
+            color = Color.White.copy(alpha = 0.55f),
+            start = Offset(0f, centerYPx),
+            end = Offset(widthPx, centerYPx),
+            strokeWidth = 2.dp.toPx()
+        )
+
+        val dynamicY = (centerLineY - tiltOffsetPx).coerceIn(0f, size.height)
+        drawLine(
+            color = Color.Red.copy(alpha = 0.8f),
+            start = Offset(0f, dynamicY),
+            end = Offset(widthPx, dynamicY),
+            strokeWidth = 2.dp.toPx()
+        )
+    }
+}
+
+/**
+ * Предпросмотр совмещения первого и последнего кадров перед склейкой.
+ */
+@Composable
+private fun PanoramaAlignmentSheetContent(
+    alignmentFirstBitmap: Bitmap?,
+    alignmentLastBitmap: Bitmap?,
+    alignmentHorizontalOffset: Float,
+    alignmentVerticalOffset: Float,
+    alignmentLoading: Boolean,
+    alignmentError: String?,
+    onHorizontalOffsetChange: (Float) -> Unit,
+    onVerticalOffsetChange: (Float) -> Unit,
+    onStartStitch: () -> Unit,
+    onKeepShots: () -> Unit,
+    onCancelAll: () -> Unit
+) {
+    val canPreview = alignmentFirstBitmap != null && alignmentLastBitmap != null && alignmentError == null
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Совместите первый и последний кадры",
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            text = "Сместите последний кадр по горизонтали и вертикали, чтобы совпали линии горизонта и главный объект, затем выберите действие.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        when {
+            alignmentLoading -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator()
+                    Text("Подготавливаем предпросмотр…")
+                }
+            }
+            alignmentError != null -> {
+                Text(
+                    text = alignmentError,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            alignmentFirstBitmap != null && alignmentLastBitmap != null -> {
+                PanoramaAlignmentPreview(
+                    firstBitmap = alignmentFirstBitmap,
+                    lastBitmap = alignmentLastBitmap,
+                    horizontalOffset = alignmentHorizontalOffset,
+                    verticalOffset = alignmentVerticalOffset
+                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Slider(
+                        value = alignmentHorizontalOffset,
+                        onValueChange = onHorizontalOffsetChange,
+                        valueRange = -1f..1f,
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = DarkGreen,
+                            thumbColor = DarkGreen
+                        )
+                    )
+                    Text(
+                        text = "Горизонталь: ${String.format(Locale.getDefault(), "%.2f", alignmentHorizontalOffset)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = alignmentVerticalOffset,
+                        onValueChange = onVerticalOffsetChange,
+                        valueRange = -1f..1f,
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = DarkGreen,
+                            thumbColor = DarkGreen
+                        )
+                    )
+                    Text(
+                        text = "Вертикаль: ${String.format(Locale.getDefault(), "%.2f", alignmentVerticalOffset)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(
+                onClick = onStartStitch,
+                enabled = canPreview && !alignmentLoading,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = DarkGreen,
+                    contentColor = White1
+                )
+            ) {
+                Text("Склеить панораму")
+            }
+
+            OutlinedButton(
+                onClick = onKeepShots,
+                enabled = !alignmentLoading,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Оставить как есть")
+            }
+        }
+
+        TextButton(
+            onClick = onCancelAll,
+            enabled = !alignmentLoading,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Отменить съёмку")
+        }
+    }
+}
+
+@Composable
+private fun PanoramaAlignmentPreview(
+    firstBitmap: Bitmap,
+    lastBitmap: Bitmap,
+    horizontalOffset: Float,
+    verticalOffset: Float,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 220.dp, max = 320.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f)
+        )
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 220.dp, max = 320.dp)
+        ) {
+            val firstImage = remember(firstBitmap) { firstBitmap.asImageBitmap() }
+            val lastImage = remember(lastBitmap) { lastBitmap.asImageBitmap() }
+            val maxWidthPx = constraints.maxWidth.takeIf { it > 0 }?.toFloat() ?: 0f
+            val maxHeightPx = constraints.maxHeight.takeIf { it > 0 }?.toFloat() ?: 0f
+            val translationX = horizontalOffset.coerceIn(-1f, 1f) * (maxWidthPx / 2f)
+            val translationY = verticalOffset.coerceIn(-1f, 1f) * (maxHeightPx / 2f)
+
+            Image(
+                bitmap = firstImage,
+                contentDescription = "Первый кадр",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            Image(
+                bitmap = lastImage,
+                contentDescription = "Последний кадр",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        this.translationX = translationX
+                        this.translationY = translationY
+                        alpha = 0.65f
+                    }
+            )
+
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokeWidth = 2.dp.toPx()
+                val centerY = size.height / 2f
+                drawLine(
+                    color = Color.Red.copy(alpha = 0.7f),
+                    start = Offset(0f, centerY),
+                    end = Offset(size.width, centerY),
+                    strokeWidth = strokeWidth
+                )
+                val centerX = size.width / 2f
+                drawLine(
+                    color = Color.Red.copy(alpha = 0.4f),
+                    start = Offset(centerX, 0f),
+                    end = Offset(centerX, size.height),
+                    strokeWidth = strokeWidth
+                )
+            }
         }
     }
 }
@@ -571,4 +993,36 @@ private fun capturePanoramaShot(
             }
         }
     )
+}
+
+private fun ensurePortraitBitmap(bitmap: Bitmap): Bitmap {
+    return if (bitmap.width > bitmap.height) {
+        val matrix = Matrix().apply { postRotate(90f) }
+        Bitmap.createBitmap(
+            bitmap,
+            0,
+            0,
+            bitmap.width,
+            bitmap.height,
+            matrix,
+            true
+        ).also {
+            bitmap.recycle()
+        }
+    } else {
+        bitmap
+    }
+}
+
+private suspend fun deleteCapturedImages(context: Context, uris: List<Uri>) {
+    withContext(Dispatchers.IO) {
+        uris.forEach { uri ->
+            runCatching {
+                val rows = context.contentResolver.delete(uri, null, null)
+                Log.d("Panorama360", "Удаление кадра $uri -> $rows")
+            }.onFailure { error ->
+                Log.w("Panorama360", "Не удалось удалить временный кадр $uri: ${error.message}")
+            }
+        }
+    }
 }

@@ -552,7 +552,7 @@ fun PhotoScreen(objectId: String, userId: String? = null, objectTitle: String = 
                         contentColor = White1
                     )
                 ) {
-                    Text("Снять панораму 360°")
+                    Text("Снять круговую панораму")
                 }
 
                 Button(
